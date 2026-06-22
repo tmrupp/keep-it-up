@@ -74,7 +74,7 @@ func _run_ball_shot_hit_area(arena) -> void:
 	var weapon = player.weapon
 	var origin := Vector3(ball.visible_radius + 0.25, ball.global_position.y, -5.0)
 	var direction := Vector3(0.0, 0.0, 1.0)
-	var result: Dictionary = weapon._resolve_shot(origin, direction, player)
+	var result: Dictionary = weapon.preview_shot(origin, direction, player)
 	var hit_position: Vector3 = result.get("hit_position", Vector3.ZERO)
 	_check("near_miss_hits_enlarged_ball_target", result.get("hit_node") == ball, "a shot outside the visible ball radius but inside the shot area should hit the ball")
 	_check("near_miss_would_miss_visible_ball", hit_position.distance_to(ball.global_position) > ball.visible_radius, "test shot should land outside the visible ball radius")
@@ -109,14 +109,14 @@ func _run_actual_dome_smoke(arena) -> void:
 	if trap_mesh != null:
 		trap_material = trap_mesh.material_override as StandardMaterial3D
 	_check("spring_trap_cap_visual_translucent", trap_material != null and trap_material.albedo_color.a < 0.75, "cap spring trap should be translucent instead of an opaque clipping disk")
-	var wall_normal: Vector3 = arena._dome_normal_at(Vector3(arena.arena_radius, arena.cone_base_height * 0.5, 0.0))
-	var cone_normal: Vector3 = arena._dome_normal_at(Vector3((arena.arena_radius + arena.cone_top_radius) * 0.5, arena.cone_base_height + 1.0, 0.0))
+	var wall_normal: Vector3 = arena.get_arena_normal_at(Vector3(arena.arena_radius, arena.cone_base_height * 0.5, 0.0))
+	var cone_normal: Vector3 = arena.get_arena_normal_at(Vector3((arena.arena_radius + arena.cone_top_radius) * 0.5, arena.cone_base_height + 1.0, 0.0))
 	_check("arena_uses_cylinder_wall_normal", absf(wall_normal.y) < 0.01, "lower arena wall should reflect like a cylinder")
 	_check("arena_uses_sloped_cone_normal", cone_normal.y > 0.35, "upper arena should reflect from a constant sloped cone surface")
 	_check("arena_frustum_incline_30_degrees", absf(arena.get_frustum_incline_degrees() - 30.0) < 0.2, "frustum roof incline should be 30 degrees")
 	_check("arena_frustum_reduced_footprint", arena.cone_top_radius >= arena.arena_radius * 0.45, "frustum should be smaller and less apex-like than the previous oversized cone")
 	var weapon = arena.get_player(GAME_CONFIG_SCRIPT.TEAM_ONE).weapon
-	var top_result: Dictionary = weapon._raycast_result(Vector3(0.0, arena.dome_height - 1.4, 0.0), Vector3.UP, arena.get_player(GAME_CONFIG_SCRIPT.TEAM_ONE))
+	var top_result: Dictionary = weapon.preview_raycast(Vector3(0.0, arena.dome_height - 1.4, 0.0), Vector3.UP, arena.get_player(GAME_CONFIG_SCRIPT.TEAM_ONE))
 	_check("arena_top_cap_blocks_shots", top_result.get("collider") == dome, "capped frustum top should be the first collider for upward shots instead of leaving an escape hole")
 
 func _run_hud_smoke(arena) -> void:
@@ -163,7 +163,7 @@ func _run_red_bot_smoke(arena) -> void:
 	var velocity_before: float = red_ball.linear_velocity.y
 	var ammo_before: int = red_player.weapon.ammo
 	arena.set_red_bot_enabled(true)
-	arena._update_red_bot(0.2)
+	arena.update_red_bot_for_tests(0.2)
 	await physics_frame
 	_check("red_bot_fires_to_save_ball", red_player.weapon.ammo < ammo_before, "red bot should fire when red ball is falling low")
 	_check("red_bot_hits_red_ball", red_player.weapon.last_shot.get("hit_node") == red_ball, "red bot shot should target the red ball")
@@ -193,7 +193,7 @@ func _run_floor_threshold_score(arena) -> void:
 	ball.global_position = Vector3(-2.0, arena.ball_floor_loss_y - 0.1, 0.0)
 	ball.linear_velocity = Vector3.ZERO
 	await physics_frame
-	arena._check_ball_floor_loss()
+	arena.check_ball_loss_for_tests()
 	_check("floor_threshold_scores", arena.match_manager.get_score(GAME_CONFIG_SCRIPT.TEAM_TWO) == red_score_before + 1, "ball at floor-loss height should score and reset")
 	_check("floor_threshold_resets_ball_high", ball.global_position.y >= ball.spawn_position.y - 0.1, "floor score should reset ball to high spawn")
 
@@ -224,7 +224,7 @@ func _run_auto_reload_and_charged_visual(arena) -> void:
 	weapon.reload_timer = 0.0
 	weapon.cooldown_timer = 0.0
 	target_ball.reset_ball()
-	arena._update_hud()
+	arena.refresh_hud()
 	var charged_label := arena.get_node_or_null("HUD/ChargedShotLabel") as Label
 	_check("charged_shot_ready_indicator_visible", charged_label != null and charged_label.text.contains("CHARGED"), "HUD should visibly indicate when the charged shot is ready")
 	var path_before: int = arena.shot_path_count
@@ -266,7 +266,7 @@ func _run_shot_feedback(arena) -> void:
 	var active_feedback_before_fade: int = arena.get_debug_state().get("active_shot_feedback_nodes", 0)
 	for _frame in range(70):
 		await process_frame
-	arena._update_shot_feedback_lifetimes(maxf(arena.shot_path_lifetime, arena.hit_marker_lifetime) + 0.1)
+	arena.update_shot_feedback_lifetimes_for_tests(maxf(arena.shot_path_lifetime, arena.hit_marker_lifetime) + 0.1)
 	await process_frame
 	await process_frame
 	_check("shot_path_fades_and_disappears", arena.get_debug_state().get("active_shot_feedback_nodes", 0) < active_feedback_before_fade, "shot path and hit feedback should fade and remove themselves")
@@ -340,7 +340,7 @@ func _find_ricochet_setup(arena, weapon, player, ball, origin: Vector3) -> Dicti
 			var y: float = lerpf(arena.cone_base_height, arena.dome_height, cone_t)
 			var dome_point := Vector3(cos(theta) * ring_radius, y, sin(theta) * ring_radius)
 			var incoming := (dome_point - origin).normalized()
-			var reflected := _reflect_direction(incoming, arena._dome_normal_at(dome_point))
+			var reflected := _reflect_direction(incoming, arena.get_arena_normal_at(dome_point))
 			var target_position := dome_point + reflected * 4.0
 			var xz_distance := Vector2(target_position.x, target_position.z).length()
 			if target_position.y < 2.0 or target_position.y > arena.dome_height - 1.0 or xz_distance > arena.arena_radius - 1.0:
@@ -348,7 +348,7 @@ func _find_ricochet_setup(arena, weapon, player, ball, origin: Vector3) -> Dicti
 			ball.global_position = target_position
 			ball.linear_velocity = Vector3.ZERO
 			await physics_frame
-			var result: Dictionary = weapon._resolve_shot(origin, incoming, player)
+			var result: Dictionary = weapon.preview_shot(origin, incoming, player)
 			if result.get("ricochet_count", 0) == 1 and result.get("hit_node") == ball:
 				return {"direction": incoming, "ball_position": target_position}
 	return {}
@@ -403,7 +403,7 @@ func _run_spring_trap(arena) -> void:
 	ball.global_position = Vector3(arena.cone_top_radius * 0.45, arena.dome_height, 0.0)
 	ball.linear_velocity = Vector3.UP * 5.0
 	var cap_velocity_before: float = ball.linear_velocity.y
-	arena._check_spring_trap_cap_contact(ball)
+	arena.check_spring_trap_cap_contact_for_tests(ball)
 	await physics_frame
 	_check("cap_spring_trap_resets_charge", trap.current_charge == 0.0, "cap spring trap should reset charge when a ball touches the cap")
 	_check("cap_spring_trap_pushes_down", ball.linear_velocity.y < cap_velocity_before, "cap spring trap should push balls downward from the top cap")

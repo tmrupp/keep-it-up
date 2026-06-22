@@ -15,11 +15,15 @@ var scores := {
 	GameConfig.TEAM_TWO: 0
 }
 var arena: Node = null
+var reset_target: Node = null
 var match_over := false
 
 func setup(new_arena: Node) -> void:
 	arena = new_arena
 	_emit_score()
+
+func set_reset_target(new_reset_target: Node) -> void:
+	reset_target = new_reset_target
 
 func register_ball_grounded(fallen_team_id: int) -> void:
 	if match_over:
@@ -45,7 +49,9 @@ func reset_match() -> void:
 	_emit_score()
 
 func reset_point_now() -> void:
-	if arena != null and arena.has_method("reset_point"):
+	if reset_target != null and reset_target.has_method("reset_point"):
+		reset_target.reset_point()
+	elif arena != null and arena.has_method("reset_point"):
 		arena.reset_point()
 	point_reset.emit()
 

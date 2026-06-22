@@ -42,6 +42,9 @@ func reset_ball() -> void:
 	global_position = spawn_position
 	_reset_motion()
 
+func reset_for_point() -> void:
+	reset_ball()
+
 func apply_shot(direction: Vector3, is_final_shot: bool) -> float:
 	var impulse_strength := get_shot_impulse(is_final_shot)
 	apply_central_impulse(direction.normalized() * impulse_strength)

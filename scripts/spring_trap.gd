@@ -33,11 +33,14 @@ func charge_from_shot(is_final_shot: bool) -> float:
 	_update_visuals()
 	return added_charge
 
+func reset_charge() -> void:
+	current_charge = 0.0
+	_update_visuals()
+
 func trigger_for_ball(ball) -> float:
 	var impulse_strength := base_downward_impulse + current_charge
 	ball.apply_trap_impulse(impulse_strength)
-	current_charge = 0.0
-	_update_visuals()
+	reset_charge()
 	return impulse_strength
 
 func get_debug_state() -> Dictionary:

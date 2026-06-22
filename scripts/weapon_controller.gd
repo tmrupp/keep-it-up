@@ -2,6 +2,7 @@ extends Node
 class_name WeaponController
 
 const GameConfig := preload("res://scripts/game_config.gd")
+const ShotResolver := preload("res://scripts/shot_resolver.gd")
 
 signal ammo_changed(ammo: int, final_bonus_enabled: bool, is_reloading: bool)
 signal shot_fired(hit_node: Node, is_final_shot: bool, impulse_strength: float, ricochet_count: int, hit_position: Vector3, path_segments: Array)
@@ -22,9 +23,11 @@ var is_reloading := false
 var reload_timer := 0.0
 var cooldown_timer := 0.0
 var last_shot: Dictionary = {}
+var shot_resolver
 
 func _ready() -> void:
 	ammo = max_ammo
+	_ensure_shot_resolver()
 	_emit_ammo_changed()
 
 func _process(delta: float) -> void:
@@ -92,6 +95,12 @@ func finish_reload_for_tests() -> void:
 func get_player_knockback(is_final_shot: bool) -> float:
 	return player_knockback * (final_player_knockback_multiplier if is_final_shot else 1.0)
 
+func preview_shot(origin: Vector3, direction: Vector3, owner_player: Node) -> Dictionary:
+	return _resolve_shot(origin, direction.normalized(), owner_player)
+
+func preview_raycast(origin: Vector3, direction: Vector3, owner_player: Node) -> Dictionary:
+	return _raycast_result(origin, direction.normalized(), owner_player)
+
 func get_debug_state() -> Dictionary:
 	return {
 		"ammo": ammo,
@@ -113,74 +122,26 @@ func _finish_reload(preserve_bonus_state: bool) -> void:
 	_emit_ammo_changed()
 
 func _resolve_shot(origin: Vector3, direction: Vector3, owner_player: Node) -> Dictionary:
-	var current_origin := origin
-	var current_direction := direction.normalized()
-	var ricochet_count := 0
-	var path_segments: Array = []
-	for _shot_segment in range(max_ricochets + 1):
-		var result := _raycast_result(current_origin, current_direction, owner_player)
-		if result.is_empty():
-			var end_position := current_origin + current_direction * shot_range
-			path_segments.append({"from": current_origin, "to": end_position})
-			return {
-				"hit_node": null,
-				"hit_direction": current_direction,
-				"hit_position": end_position,
-				"ricochet_count": ricochet_count,
-				"path_segments": path_segments
-			}
-		var collider := _get_effective_hit_node(result.get("collider") as Node)
-		var hit_position: Vector3 = result.get("position", current_origin)
-		var hit_normal: Vector3 = result.get("normal", Vector3.UP)
-		path_segments.append({"from": current_origin, "to": hit_position})
-		if collider != null and _is_ricochet_surface(collider) and ricochet_count < max_ricochets:
-			ricochet_count += 1
-			current_direction = _reflect_direction(current_direction, hit_normal)
-			current_origin = hit_position + current_direction * ricochet_origin_offset
-			continue
-		return {
-			"hit_node": collider,
-			"hit_direction": current_direction,
-			"hit_position": hit_position,
-			"ricochet_count": ricochet_count,
-			"path_segments": path_segments
-		}
-	return {
-		"hit_node": null,
-		"hit_direction": current_direction,
-		"hit_position": current_origin + current_direction * shot_range,
-		"ricochet_count": ricochet_count,
-		"path_segments": path_segments
-	}
+	return _ensure_shot_resolver().resolve(origin, direction.normalized(), owner_player, shot_range, max_ricochets, ricochet_origin_offset)
 
 func _raycast_result(origin: Vector3, direction: Vector3, owner_player: Node) -> Dictionary:
-	var world := get_viewport().world_3d
-	if world == null:
-		return {}
-	var query := PhysicsRayQueryParameters3D.create(origin, origin + direction * shot_range)
-	query.collide_with_areas = true
-	query.collide_with_bodies = true
-	if owner_player is CollisionObject3D:
-		query.exclude = [owner_player.get_rid()]
-	return world.direct_space_state.intersect_ray(query)
+	return _ensure_shot_resolver().raycast_result(origin, direction.normalized(), owner_player, shot_range)
 
 func _is_ricochet_surface(node: Node) -> bool:
-	return node != null and node.is_in_group(GameConfig.DOME_GROUP)
+	return _ensure_shot_resolver().is_ricochet_surface(node)
 
 func _get_effective_hit_node(node: Node) -> Node:
-	if node == null:
-		return null
-	if node.has_meta("shot_target_node"):
-		var target = node.get_meta("shot_target_node")
-		if target is Node:
-			return target
-	return node
+	return _ensure_shot_resolver().get_effective_hit_node(node)
 
 func _reflect_direction(direction: Vector3, normal: Vector3) -> Vector3:
-	var safe_normal := normal.normalized()
-	if safe_normal == Vector3.ZERO:
-		return direction.normalized()
-	return (direction - 2.0 * direction.dot(safe_normal) * safe_normal).normalized()
+	return _ensure_shot_resolver().reflect_direction(direction, normal)
+
+func _ensure_shot_resolver():
+	if shot_resolver == null:
+		shot_resolver = ShotResolver.new()
+		shot_resolver.name = "ShotResolver"
+		add_child(shot_resolver)
+	return shot_resolver
 
 func _apply_hit(hit_node: Node, direction: Vector3, is_final_shot: bool) -> float:
 	if hit_node.has_method("apply_shot"):

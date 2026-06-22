@@ -81,6 +81,9 @@ func reset_player(spawn_position: Vector3) -> void:
 		weapon.is_reloading = false
 		weapon.reload_timer = 0.0
 
+func reset_for_point(spawn_position: Vector3) -> void:
+	reset_player(spawn_position)
+
 func try_fire() -> bool:
 	if stun_timer > 0.0 or weapon == null or camera == null:
 		return false
