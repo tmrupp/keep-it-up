@@ -53,6 +53,21 @@ func get_debug_state() -> Dictionary:
 		"cap_radius": cap_radius
 	}
 
+func get_network_state() -> Dictionary:
+	return {
+		"current_charge": current_charge,
+		"covers_cap": covers_cap,
+		"cap_height": cap_height,
+		"cap_radius": cap_radius
+	}
+
+func apply_network_state(state: Dictionary) -> void:
+	current_charge = float(state.get("current_charge", current_charge))
+	covers_cap = bool(state.get("covers_cap", covers_cap))
+	cap_height = float(state.get("cap_height", cap_height))
+	cap_radius = float(state.get("cap_radius", cap_radius))
+	_update_visuals()
+
 func _on_body_entered(body: Node) -> void:
 	if body != null and body.get_script() == TeamBallScript:
 		trigger_for_ball(body)

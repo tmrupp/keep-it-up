@@ -66,5 +66,20 @@ func get_debug_state() -> Dictionary:
 		"match_over": match_over
 	}
 
+func get_network_state() -> Dictionary:
+	return {
+		"team_one": get_score(GameConfig.TEAM_ONE),
+		"team_two": get_score(GameConfig.TEAM_TWO),
+		"target_score": target_score,
+		"match_over": match_over
+	}
+
+func apply_network_state(state: Dictionary) -> void:
+	scores[GameConfig.TEAM_ONE] = int(state.get("team_one", get_score(GameConfig.TEAM_ONE)))
+	scores[GameConfig.TEAM_TWO] = int(state.get("team_two", get_score(GameConfig.TEAM_TWO)))
+	target_score = int(state.get("target_score", target_score))
+	match_over = bool(state.get("match_over", match_over))
+	_emit_score()
+
 func _emit_score() -> void:
 	score_changed.emit(scores.duplicate())

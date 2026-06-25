@@ -4,18 +4,21 @@ class_name TeamBall
 const GameConfig := preload("res://scripts/game_config.gd")
 
 @export var team_id := GameConfig.TEAM_ONE
-@export var shot_impulse := 18.0
+@export var shot_impulse := 24.0
 @export var final_shot_multiplier := 1.8
 @export var trap_multiplier := 1.0
 @export var ball_gravity_scale := 0.1
 @export var ball_mass := 1.35
 @export var ball_linear_damp := 0.28
+@export var shot_scoot_linear_damp := 3.6
+@export var shot_scoot_damp_duration := 0.42
 @export var start_sleeping := false
 @export var visible_radius := 0.55
 @export var shot_hit_radius := 0.95
 
 var spawn_position := Vector3.ZERO
 var display_color := Color.WHITE
+var shot_scoot_damp_timer := 0.0
 
 func _ready() -> void:
 	gravity_scale = ball_gravity_scale
@@ -29,6 +32,13 @@ func _ready() -> void:
 	if spawn_position == Vector3.ZERO:
 		spawn_position = global_position
 	_ensure_visuals()
+
+func _physics_process(delta: float) -> void:
+	if shot_scoot_damp_timer <= 0.0:
+		return
+	shot_scoot_damp_timer = maxf(0.0, shot_scoot_damp_timer - delta)
+	if shot_scoot_damp_timer == 0.0:
+		linear_damp = ball_linear_damp
 
 func setup(new_team_id: int, new_spawn_position: Vector3) -> void:
 	team_id = new_team_id
@@ -47,6 +57,7 @@ func reset_for_point() -> void:
 
 func apply_shot(direction: Vector3, is_final_shot: bool) -> float:
 	var impulse_strength := get_shot_impulse(is_final_shot)
+	_start_shot_scoot_damping()
 	apply_central_impulse(direction.normalized() * impulse_strength)
 	return impulse_strength
 
@@ -64,13 +75,41 @@ func get_debug_state() -> Dictionary:
 		"velocity": _vector_to_array(linear_velocity),
 		"speed": linear_velocity.length(),
 		"gravity_scale": gravity_scale,
-		"linear_damp": linear_damp
+		"linear_damp": linear_damp,
+		"base_linear_damp": ball_linear_damp,
+		"shot_scoot_linear_damp": shot_scoot_linear_damp,
+		"shot_scoot_damp_timer": shot_scoot_damp_timer
 	}
+
+func get_network_state() -> Dictionary:
+	return {
+		"team_id": team_id,
+		"position": global_position,
+		"linear_velocity": linear_velocity,
+		"angular_velocity": angular_velocity,
+		"sleeping": sleeping,
+		"linear_damp": linear_damp,
+		"shot_scoot_damp_timer": shot_scoot_damp_timer
+	}
+
+func apply_network_state(state: Dictionary) -> void:
+	global_position = state.get("position", global_position)
+	linear_velocity = state.get("linear_velocity", linear_velocity)
+	angular_velocity = state.get("angular_velocity", angular_velocity)
+	sleeping = bool(state.get("sleeping", sleeping))
+	linear_damp = float(state.get("linear_damp", linear_damp))
+	shot_scoot_damp_timer = float(state.get("shot_scoot_damp_timer", shot_scoot_damp_timer))
 
 func _reset_motion() -> void:
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
+	linear_damp = ball_linear_damp
+	shot_scoot_damp_timer = 0.0
 	sleeping = false
+
+func _start_shot_scoot_damping() -> void:
+	shot_scoot_damp_timer = shot_scoot_damp_duration
+	linear_damp = shot_scoot_linear_damp
 
 func _ensure_visuals() -> void:
 	if has_node("CollisionShape3D") == false:

@@ -722,6 +722,9 @@ Completed first implementation slice:
 - Extracted top-cap spring-trap contact/debounce behavior into `scripts/cap_trap_contact_monitor.gd`.
 - Extracted hitscan raycast, ricochet, effective target, and path-segment resolution into `scripts/shot_resolver.gd`.
 - Updated the scenario runner to use public helper APIs except for direct `_input` calls that intentionally test Godot input handling.
+- Completed Phase 9 scene-first conversion for reusable roots: `ArenaManager` now instantiates `ArenaGeometry`, `HUD`, `Player`, `TeamBall`, and `SpringTrap` from exported `PackedScene` references with script fallbacks.
+- Added `scenes/hud.tscn` and `scenes/arena_geometry.tscn`; existing `scenes/player.tscn`, `scenes/team_ball.tscn`, and `scenes/spring_trap.tscn` are now used by default.
+- Added scenario checks that verify the arena is using the reusable scene files instead of silently falling back to script-only construction.
 - Added `MULTIPLAYER_WEB_EXPORT_PLAN.md` to capture LAN/listen-server authority, browser networking constraints, and web export verification.
 
 Latest verified command:
@@ -730,8 +733,8 @@ Latest verified command:
 
 Current refactor status:
 
-- The planned architecture extraction is complete enough for the next feature pass.
-- The remaining optional work is editor-authoring polish: gradually instantiate existing `Player`, `TeamBall`, `SpringTrap`, and HUD scenes from `PackedScene` references, and introduce config resources only when multiple presets or modes need them.
+- The planned architecture extraction and Phase 9 scene-first conversion are complete enough for the next feature pass.
+- The remaining optional refactor work is config resources: introduce them only when multiple presets or modes need them.
 - The next functional implementation slice should start multiplayer scaffolding from `MULTIPLAYER_WEB_EXPORT_PLAN.md`, beginning with `NetworkManager` local/desktop LAN lifecycle.
 
 ## Definition Of Done For The Refactor

@@ -276,12 +276,59 @@ Exit criteria:
 
 ## Suggested Next Implementation Order
 
-1. Finish extracting arena geometry and ground/trap detectors from `ArenaManager`.
-2. Extract shot resolution into `ShotResolver`, because networked firing will need host-side preview/validation.
-3. Create `NetworkManager` with local/desktop LAN lifecycle only.
+1. Finish extracting arena geometry and ground/trap detectors from `ArenaManager`. Done.
+2. Extract shot resolution into `ShotResolver`, because networked firing will need host-side preview/validation. Done.
+3. Create `NetworkManager` with Option A WebSocket lifecycle. Done.
 4. Add deterministic player ownership and local/remote camera/input behavior.
 5. Replicate player state, then weapon state, then shot events.
 6. Replicate balls/trap/score/reset.
-7. Add desktop `listen_server_smoke`.
+7. Add desktop/browser WebSocket smoke that launches native host plus a client.
 8. Add web export preset and local browser smoke.
-9. Add WebSocket transport for browser clients.
+
+## Implementation Progress
+
+Completed Option A transport scaffold:
+
+- Added `scripts/network_manager.gd` as the owner of multiplayer peer lifecycle.
+- Added `host_websocket(port, bind_address)` for the native/headless host WebSocket server.
+- Added `join_websocket(url)` for browser or desktop clients.
+- Added `host_lan` and `join_lan` compatibility aliases that use WebSocket for this Option A implementation.
+- Added peer lifecycle signals and `get_debug_state()` for smoke tests and future network diagnostics.
+- Wired `scripts/main.gd` to create `NetworkManager`, handle `host_game`, `join_game`, and `disconnect_game`, and expose command-line flags.
+- Added scenario-runner smoke checks that verify local default state and Option A API availability.
+- Wired `ArenaManager` to `NetworkManager` for host/client role changes, peer team assignment, local/remote camera ownership, and disconnect fallback to local mode.
+- Added host-side RPC validation for client fire and reload requests.
+- Added client-to-host local player state submission.
+- Added host-to-client state snapshots for players, balls, trap, score/match state, point reset count, and bot state.
+- Added host-broadcast shot feedback events so clients render authoritative shot paths and hit markers through `ShotFeedbackController`.
+- Added network debug state to `ArenaManager.get_debug_state()` for JSON smoke output.
+- Added deterministic scenario checks for host role, blue/red ownership, peer assignment to red/team two, bot disable on peer join, and stable local fallback on disconnect.
+
+Manual debug controls:
+
+- Press `H` in a native desktop build to host a WebSocket server on port `7000`.
+- Press `J` to join `ws://127.0.0.1:7000`.
+- Press `Esc` through the `disconnect_game` action to disconnect from the active peer.
+
+Command-line debug flags:
+
+- `--host-websocket` starts a native WebSocket host.
+- `--websocket-port=7000` changes the host port.
+- `--join-websocket=ws://127.0.0.1:7000` starts as a WebSocket client.
+- `--websocket-url=ws://127.0.0.1:7000` changes the default join URL used by the `J` input action.
+
+Current implementation boundary:
+
+- Multiplayer is now implemented at prototype authority level: the host validates fire/reload, owns scoring/balls/trap/reset, and broadcasts state snapshots. Client movement is submitted as state snapshots for this graybox pass rather than fully host-simulated from raw input. The next refinement should replace client movement-state submission with host-simulated input snapshots if stricter authority becomes important.
+
+## Multiplayer Checklist Status
+
+- Local mode still works with no peer. Done and covered by the scenario loop.
+- Desktop/native host starts through `NetworkManager.host_websocket` and assigns itself team one. Done; smoke-covered by host role and ownership checks.
+- WebSocket client joins through `NetworkManager.join_websocket` and is assigned team two by host peer assignment. Done in implementation; deterministic assignment is smoke-covered, live two-process/browser connection remains a manual/network smoke target.
+- Local player camera/input attach to the correct player on host/client role changes. Done and smoke-covered for host; client path uses the same `local_team_id` control path.
+- Host owns balls, trap, score, shot validation, stun, and reset. Done for scoring/balls/trap/reset/shot validation; stun state is included in player snapshots.
+- Client fire/reload requests are validated by host. Done through `_rpc_request_fire` and `_rpc_request_reload`.
+- Ball impulse, trap charge, score, and point reset replicate to peers. Done through host state snapshots.
+- Disconnect returns the arena to stable local mode. Done and smoke-covered.
+- Network debug state is written to JSON for smoke tests. Done through `ArenaManager.get_debug_state()` and the existing result writer.

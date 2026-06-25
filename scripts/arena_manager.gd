@@ -15,7 +15,15 @@ const RoundResetService := preload("res://scripts/round_reset_service.gd")
 const GroundLossMonitor := preload("res://scripts/ground_loss_monitor.gd")
 const CapTrapContactMonitor := preload("res://scripts/cap_trap_contact_monitor.gd")
 
+const DEFAULT_ARENA_GEOMETRY_SCENE := preload("res://scenes/arena_geometry.tscn")
+const DEFAULT_HUD_SCENE := preload("res://scenes/hud.tscn")
+const DEFAULT_PLAYER_SCENE := preload("res://scenes/player.tscn")
+const DEFAULT_TEAM_BALL_SCENE := preload("res://scenes/team_ball.tscn")
+const DEFAULT_SPRING_TRAP_SCENE := preload("res://scenes/spring_trap.tscn")
+
 signal arena_ready
+
+const NETWORK_SYNC_INTERVAL := 0.05
 
 @export var arena_radius := 16.0
 @export var dome_height := 14.0
@@ -35,6 +43,11 @@ signal arena_ready
 @export var red_bot_reaction_height := 8.5
 @export var red_bot_min_fall_speed := -0.25
 @export var red_bot_move_speed := 7.0
+@export var arena_geometry_scene: PackedScene = DEFAULT_ARENA_GEOMETRY_SCENE
+@export var hud_scene: PackedScene = DEFAULT_HUD_SCENE
+@export var player_scene: PackedScene = DEFAULT_PLAYER_SCENE
+@export var team_ball_scene: PackedScene = DEFAULT_TEAM_BALL_SCENE
+@export var spring_trap_scene: PackedScene = DEFAULT_SPRING_TRAP_SCENE
 
 var match_manager
 var players: Array = []
@@ -62,6 +75,11 @@ var shot_path_count := 0
 var hit_feedback_timer := 0.0
 var last_scored_ball_team := 0
 var point_reset_count := 0
+var network_manager: Node = null
+var network_role := "local"
+var local_team_id := GameConfig.TEAM_ONE
+var peer_team_assignments := {}
+var network_sync_timer := 0.0
 
 func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("toggle_red_bot"):
@@ -74,6 +92,7 @@ func _ready() -> void:
 	_build_arena()
 	_spawn_match_objects()
 	_setup_match_manager()
+	_apply_local_team_control()
 	_update_hud()
 	arena_ready.emit()
 
@@ -143,6 +162,7 @@ func get_debug_state() -> Dictionary:
 		"reset": round_reset_service.get_debug_state() if round_reset_service != null else {},
 		"ground_loss": ground_loss_monitor.get_debug_state() if ground_loss_monitor != null else {},
 		"cap_trap_contact": cap_trap_contact_monitor.get_debug_state() if cap_trap_contact_monitor != null else {},
+		"network": _get_network_debug_state(),
 		"has_dome": dome_body != null,
 		"shot_feedback_count": _get_shot_feedback_count(),
 		"shot_path_count": _get_shot_path_count(),
@@ -156,10 +176,12 @@ func use_overview_camera() -> void:
 		overview_camera.current = true
 
 func _physics_process(_delta: float) -> void:
-	if cap_trap_contact_monitor != null:
-		cap_trap_contact_monitor.update_cooldowns(_delta)
-	_check_ball_floor_loss()
+	if is_network_client() == false:
+		if cap_trap_contact_monitor != null:
+			cap_trap_contact_monitor.update_cooldowns(_delta)
+		_check_ball_floor_loss()
 	_update_red_bot(_delta)
+	_update_network_sync(_delta)
 
 func set_red_bot_enabled(enabled: bool) -> void:
 	red_bot_enabled = enabled
@@ -211,12 +233,56 @@ func refresh_hud() -> void:
 func update_shot_feedback_lifetimes_for_tests(delta: float) -> void:
 	_update_shot_feedback_lifetimes(delta)
 
+func setup_network(new_network_manager: Node) -> void:
+	network_manager = new_network_manager
+	if network_manager == null:
+		return
+	if network_manager.host_started.is_connected(_on_network_host_started) == false:
+		network_manager.host_started.connect(_on_network_host_started)
+	if network_manager.join_started.is_connected(_on_network_join_started) == false:
+		network_manager.join_started.connect(_on_network_join_started)
+	if network_manager.peer_connected.is_connected(_on_network_peer_connected) == false:
+		network_manager.peer_connected.connect(_on_network_peer_connected)
+	if network_manager.peer_disconnected.is_connected(_on_network_peer_disconnected) == false:
+		network_manager.peer_disconnected.connect(_on_network_peer_disconnected)
+	if network_manager.connected_to_server.is_connected(_on_network_connected_to_server) == false:
+		network_manager.connected_to_server.connect(_on_network_connected_to_server)
+	if network_manager.server_disconnected.is_connected(_on_network_server_disconnected) == false:
+		network_manager.server_disconnected.connect(_on_network_server_disconnected)
+	_apply_local_team_control()
+
+func is_network_host() -> bool:
+	return network_role == "host"
+
+func is_network_client() -> bool:
+	return network_role == "client" or network_role == "client_connecting"
+
+func request_local_fire(player: Node) -> bool:
+	if player == null or player.camera == null:
+		return false
+	var origin: Vector3 = player.camera.global_position
+	var direction: Vector3 = (-player.camera.global_transform.basis.z).normalized()
+	if is_network_client():
+		rpc_id(1, "_rpc_request_fire", player.team_id, origin, direction)
+		return true
+	if player.weapon != null:
+		return player.weapon.try_fire(origin, direction, player)
+	return false
+
+func request_local_reload(player: Node) -> bool:
+	if player == null or player.weapon == null:
+		return false
+	if is_network_client():
+		rpc_id(1, "_rpc_request_reload", player.team_id)
+		return true
+	return player.weapon.request_reload()
+
 func _build_arena() -> void:
 	spawn_registry = SpawnRegistry.new()
 	spawn_registry.name = "SpawnRegistry"
 	spawn_registry.setup(player_one_spawn, player_two_spawn, ball_one_spawn, ball_two_spawn)
 	add_child(spawn_registry)
-	arena_geometry = ArenaGeometry.new()
+	arena_geometry = _instantiate_scene_or_script(arena_geometry_scene, ArenaGeometry)
 	arena_geometry.name = "ArenaGeometry"
 	arena_geometry.setup(arena_radius, dome_height, cone_top_radius, cone_incline_degrees, floor_y)
 	add_child(arena_geometry)
@@ -229,12 +295,12 @@ func _build_arena() -> void:
 	_add_hud()
 
 func _spawn_match_objects() -> void:
-	spring_trap = SpringTrap.new()
+	spring_trap = _instantiate_scene_or_script(spring_trap_scene, SpringTrap)
 	spring_trap.name = "SpringTrap"
 	spring_trap.setup_cap(dome_height + 0.08, cone_top_radius)
 	add_child(spring_trap)
 	_setup_cap_trap_contact_monitor()
-	var player_one := PlayerController.new()
+	var player_one = _instantiate_scene_or_script(player_scene, PlayerController)
 	player_one.name = "PlayerBlue"
 	add_child(player_one)
 	player_one.setup(GameConfig.TEAM_ONE, player_one_spawn, true)
@@ -243,18 +309,18 @@ func _spawn_match_objects() -> void:
 		shot_feedback_controller.local_camera = local_camera
 	_connect_local_player_feedback(player_one)
 	players.append(player_one)
-	var player_two := PlayerController.new()
+	var player_two = _instantiate_scene_or_script(player_scene, PlayerController)
 	player_two.name = "PlayerRed"
 	add_child(player_two)
 	player_two.setup(GameConfig.TEAM_TWO, player_two_spawn, false)
 	_connect_local_player_feedback(player_two)
 	players.append(player_two)
-	var ball_one := TeamBall.new()
+	var ball_one = _instantiate_scene_or_script(team_ball_scene, TeamBall)
 	ball_one.name = "BallBlue"
 	add_child(ball_one)
 	ball_one.setup(GameConfig.TEAM_ONE, ball_one_spawn)
 	balls.append(ball_one)
-	var ball_two := TeamBall.new()
+	var ball_two = _instantiate_scene_or_script(team_ball_scene, TeamBall)
 	ball_two.name = "BallRed"
 	add_child(ball_two)
 	ball_two.setup(GameConfig.TEAM_TWO, ball_two_spawn)
@@ -301,6 +367,7 @@ func _setup_match_manager() -> void:
 func _on_point_reset_completed() -> void:
 	last_scored_ball_team = 0
 	point_reset_count = round_reset_service.point_reset_count if round_reset_service != null else point_reset_count
+	_broadcast_network_state()
 
 func _dome_normal_at(point: Vector3) -> Vector3:
 	if arena_geometry != null:
@@ -325,7 +392,7 @@ func _add_floor_loss_area() -> void:
 	floor_area = ground_loss_monitor
 
 func _add_hud() -> void:
-	hud_controller = HUDController.new()
+	hud_controller = _instantiate_scene_or_script(hud_scene, HUDController)
 	hud_controller.setup()
 	add_child(hud_controller)
 	hud_label = hud_controller.score_label
@@ -340,6 +407,13 @@ func _add_hud() -> void:
 	shot_feedback_controller.shot_path_start_offset = shot_path_start_offset
 	shot_feedback_controller.local_camera = local_camera
 	add_child(shot_feedback_controller)
+
+func _instantiate_scene_or_script(scene: PackedScene, script_reference):
+	if scene != null:
+		var instance = scene.instantiate()
+		if instance != null:
+			return instance
+	return script_reference.new()
 
 func _check_ball_floor_loss() -> void:
 	if match_manager == null or match_manager.match_over:
@@ -379,9 +453,11 @@ func _on_ball_grounded(team_id: int, _ball: Node) -> void:
 
 func _on_score_changed(_scores: Dictionary) -> void:
 	_update_hud()
+	_broadcast_network_state()
 
 func _on_match_finished(_winning_team_id: int) -> void:
 	_update_hud()
+	_broadcast_network_state()
 
 func _on_keeper_bot_enabled_changed(enabled: bool) -> void:
 	red_bot_enabled = enabled
@@ -425,6 +501,9 @@ func _on_local_shot_fired(hit_node: Node, is_final_shot: bool, impulse_strength:
 		if is_final_shot == false:
 			color = Color(0.2, 0.88, 1.0, 1.0)
 	show_shot_feedback(feedback, color, hit_position, path_segments, ricochet_count > 0, is_final_shot)
+	if is_network_host():
+		_broadcast_shot_feedback(feedback, color, hit_position, path_segments, ricochet_count > 0, is_final_shot)
+		_broadcast_network_state()
 
 func show_shot_feedback(feedback: String, color: Color, world_position: Vector3, path_segments: Array = [], is_bank_shot: bool = false, is_charged_shot: bool = false) -> void:
 	if hud_controller != null:
@@ -477,3 +556,195 @@ func _move_red_bot_under_ball(red_player: Node, red_ball: Node, delta: float) ->
 	keeper_bot_controller.player = red_player
 	keeper_bot_controller.ball = red_ball
 	keeper_bot_controller.update_bot(delta)
+
+func _on_network_host_started(_transport: String, _bind_address: String, _port: int) -> void:
+	network_role = "host"
+	local_team_id = GameConfig.TEAM_ONE
+	peer_team_assignments.clear()
+	_apply_local_team_control()
+
+func _on_network_join_started(_transport: String, _url: String) -> void:
+	network_role = "client_connecting"
+	local_team_id = GameConfig.TEAM_TWO
+	set_red_bot_enabled(false)
+	_apply_local_team_control()
+
+func _on_network_connected_to_server() -> void:
+	network_role = "client"
+	local_team_id = GameConfig.TEAM_TWO
+	set_red_bot_enabled(false)
+	_apply_local_team_control()
+	rpc_id(1, "_rpc_request_full_state")
+
+func _on_network_server_disconnected() -> void:
+	network_role = "local"
+	local_team_id = GameConfig.TEAM_ONE
+	peer_team_assignments.clear()
+	set_red_bot_enabled(true)
+	_apply_local_team_control()
+
+func _on_network_peer_connected(peer_id: int) -> void:
+	if is_network_host() == false:
+		return
+	peer_team_assignments[peer_id] = GameConfig.TEAM_TWO
+	set_red_bot_enabled(false)
+	_apply_local_team_control()
+	if _can_send_rpc():
+		rpc_id(peer_id, "_rpc_configure_client", GameConfig.TEAM_TWO)
+	_send_full_state_to_peer(peer_id)
+
+func _on_network_peer_disconnected(peer_id: int) -> void:
+	peer_team_assignments.erase(peer_id)
+	if is_network_host() and peer_team_assignments.is_empty():
+		set_red_bot_enabled(true)
+	_apply_local_team_control()
+
+func _apply_local_team_control() -> void:
+	for player in players:
+		var is_local_player: bool = player.team_id == local_team_id
+		player.set_active_camera(is_local_player)
+		player.set_local_control_enabled(is_local_player)
+		player.set_command_target(self if is_local_player and network_role != "local" else null)
+
+func _update_network_sync(delta: float) -> void:
+	if network_role == "client":
+		network_sync_timer += delta
+		if network_sync_timer >= NETWORK_SYNC_INTERVAL:
+			network_sync_timer = 0.0
+			_send_local_player_state_to_host()
+	elif is_network_host() and _has_network_peers():
+		network_sync_timer += delta
+		if network_sync_timer >= NETWORK_SYNC_INTERVAL:
+			network_sync_timer = 0.0
+			_broadcast_network_state(false)
+
+func _send_local_player_state_to_host() -> void:
+	var player = get_player(local_team_id)
+	if player != null:
+		rpc_id(1, "_rpc_submit_player_state", local_team_id, player.get_network_state())
+
+@rpc("authority", "reliable")
+func _rpc_configure_client(team_id: int) -> void:
+	network_role = "client"
+	local_team_id = team_id
+	set_red_bot_enabled(false)
+	_apply_local_team_control()
+
+@rpc("any_peer", "unreliable")
+func _rpc_submit_player_state(team_id: int, state: Dictionary) -> void:
+	if is_network_host() == false:
+		return
+	var sender_id := multiplayer.get_remote_sender_id()
+	if int(peer_team_assignments.get(sender_id, 0)) != team_id:
+		return
+	var player = get_player(team_id)
+	if player != null:
+		player.apply_network_state(state)
+
+@rpc("any_peer", "reliable")
+func _rpc_request_fire(team_id: int, origin: Vector3, direction: Vector3) -> void:
+	if is_network_host() == false or _sender_can_control_team(team_id) == false:
+		return
+	var player = get_player(team_id)
+	if player != null and player.weapon != null and player.is_stunned() == false:
+		player.weapon.try_fire(origin, direction.normalized(), player)
+
+@rpc("any_peer", "reliable")
+func _rpc_request_reload(team_id: int) -> void:
+	if is_network_host() == false or _sender_can_control_team(team_id) == false:
+		return
+	var player = get_player(team_id)
+	if player != null and player.weapon != null:
+		player.weapon.request_reload()
+		_broadcast_network_state()
+
+@rpc("any_peer", "reliable")
+func _rpc_request_full_state() -> void:
+	if is_network_host() == false:
+		return
+	_send_full_state_to_peer(multiplayer.get_remote_sender_id())
+
+@rpc("authority", "unreliable")
+func _rpc_apply_network_state(state: Dictionary) -> void:
+	if is_network_host():
+		return
+	_apply_network_state(state)
+
+@rpc("authority", "reliable")
+func _rpc_show_shot_feedback(feedback: String, color: Color, world_position: Vector3, path_segments: Array, is_bank_shot: bool, is_charged_shot: bool) -> void:
+	if is_network_host():
+		return
+	show_shot_feedback(feedback, color, world_position, path_segments, is_bank_shot, is_charged_shot)
+
+func _sender_can_control_team(team_id: int) -> bool:
+	var sender_id := multiplayer.get_remote_sender_id()
+	if sender_id == 0:
+		return team_id == local_team_id
+	return int(peer_team_assignments.get(sender_id, 0)) == team_id
+
+func _send_full_state_to_peer(peer_id: int) -> void:
+	if peer_id > 0 and _can_send_rpc():
+		rpc_id(peer_id, "_rpc_apply_network_state", _build_network_state())
+
+func _broadcast_network_state(reliable: bool = true) -> void:
+	if is_network_host() == false or _has_network_peers() == false or _can_send_rpc() == false:
+		return
+	if reliable:
+		rpc("_rpc_apply_network_state", _build_network_state())
+	else:
+		rpc("_rpc_apply_network_state", _build_network_state())
+
+func _broadcast_shot_feedback(feedback: String, color: Color, world_position: Vector3, path_segments: Array, is_bank_shot: bool, is_charged_shot: bool) -> void:
+	if _has_network_peers() and _can_send_rpc():
+		rpc("_rpc_show_shot_feedback", feedback, color, world_position, path_segments, is_bank_shot, is_charged_shot)
+
+func _build_network_state() -> Dictionary:
+	var player_states := []
+	for player in players:
+		player_states.append(player.get_network_state())
+	var ball_states := []
+	for ball in balls:
+		ball_states.append(ball.get_network_state())
+	return {
+		"players": player_states,
+		"balls": ball_states,
+		"trap": spring_trap.get_network_state() if spring_trap != null else {},
+		"match": match_manager.get_network_state() if match_manager != null else {},
+		"point_reset_count": point_reset_count,
+		"last_scored_ball_team": last_scored_ball_team,
+		"red_bot_enabled": red_bot_enabled
+	}
+
+func _apply_network_state(state: Dictionary) -> void:
+	for player_state in state.get("players", []):
+		var player = get_player(int(player_state.get("team_id", 0)))
+		if player != null:
+			player.apply_network_state(player_state)
+	for ball_state in state.get("balls", []):
+		var ball = get_ball(int(ball_state.get("team_id", 0)))
+		if ball != null:
+			ball.apply_network_state(ball_state)
+	if spring_trap != null:
+		spring_trap.apply_network_state(state.get("trap", {}))
+	if match_manager != null:
+		match_manager.apply_network_state(state.get("match", {}))
+	point_reset_count = int(state.get("point_reset_count", point_reset_count))
+	last_scored_ball_team = int(state.get("last_scored_ball_team", last_scored_ball_team))
+	red_bot_enabled = bool(state.get("red_bot_enabled", red_bot_enabled))
+	_apply_local_team_control()
+	_update_hud()
+
+func _has_network_peers() -> bool:
+	return network_manager != null and network_manager.get_debug_state().get("connected_peer_ids", []).size() > 0
+
+func _can_send_rpc() -> bool:
+	return multiplayer.multiplayer_peer != null
+
+func _get_network_debug_state() -> Dictionary:
+	return {
+		"role": network_role,
+		"local_team_id": local_team_id,
+		"peer_team_assignments": peer_team_assignments.duplicate(),
+		"has_network_manager": network_manager != null,
+		"has_network_peers": _has_network_peers()
+	}

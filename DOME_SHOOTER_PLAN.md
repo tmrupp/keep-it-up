@@ -236,6 +236,7 @@ Loop 1 is implemented and verified.
 - Loop 4 follow-up revised: the spring trap is now the flat top cap, while the sloped frustum remains a predictable ricochet surface; cap shots charge the trap and balls touching the cap get launched downward with debounce protection.
 - Loop 4 tuning follow-up: frustum incline set to 30 degrees, frustum footprint reduced, duplicate coplanar roof visuals hidden to avoid clipping, and the cap spring trap made translucent.
 - Loop 5 implemented: ball behavior moved to very low gravity and high damping for more predictable arcs while preserving the keep-it-up pressure.
+- Loop 5 ball feel follow-up: team balls now use a balloon-like shot response, with a stronger initial shot impulse and a short high-damping scoot window that quickly bleeds off the burst before returning to normal drift.
 - Loop 5 weapon follow-up: weapons now auto-reload when emptied, the HUD shows a charged-shot-ready indicator, and charged/final shots use a distinct gold shot path/marker style.
 - Loop 5 ricochet follow-up: the floor is now a ricochet surface, and shot rays skip the ground-loss trigger so downward shots bounce off the physical floor.
 - Next loop target: manual feel check for ball predictability; add speed clamps only if shots still create unreadable ball speeds.

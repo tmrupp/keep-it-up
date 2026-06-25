@@ -164,6 +164,8 @@ Try very low gravity plus speed clamps first. It preserves the game identity bet
 
 Implemented first: very low gravity plus high damping. Speed clamps remain the next option if shots still create unreadable ball speeds.
 
+Follow-up implemented: ball shots now behave more like a balloon being swatted. A normal shot has a stronger initial impulse for a quick scoot, then the ball uses a short high-damping window so that burst bleeds off quickly and returns to the normal low-gravity drift.
+
 ## Recommended Next Prototype
 
 1. Replace the dome with a cylinder plus truncated cone top. // yes - implemented with cylinder walls and a constant-slope truncated cone ricochet surface.

@@ -1,5 +1,6 @@
 param(
-    [int]$TimeoutSeconds = 10
+    [int]$TimeoutSeconds = 10,
+    [string]$Mode = "3D"
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,7 +54,7 @@ function Resolve-GodotExecutable {
 
 $Godot = Resolve-GodotExecutable $Godot
 
-if ([string]::IsNullOrWhiteSpace($Godot)) {
+if ([string]::IsNullOrWhiteSpace($Godot) -or -not (Test-Path $Godot)) {
     $candidates = @(
         "$env:USERPROFILE\Downloads\Godot_v4.6.2-stable_win64.exe",
         "$env:USERPROFILE\Downloads\Godot_v4.6.2-stable_win64.exe\Godot_v4.6.2-stable_win64_console.exe",
@@ -71,12 +72,13 @@ if ([string]::IsNullOrWhiteSpace($Godot)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($Godot) -or -not (Test-Path $Godot)) {
-    throw "Could not find Godot. Set GODOT_BIN to the Godot executable path."
+    throw "Could not find Godot. Set GODOT_BIN to the Godint executable path."
 }
 
 Write-Host "Using Godot: $Godot"
 Write-Host "Project: $ProjectRoot"
 Write-Host "Timeout: $TimeoutSeconds seconds"
+Write-Host "Mode: $Mode"
 
 $resultDir = Join-Path $ProjectRoot "artifacts\results"
 New-Item -ItemType Directory -Force $resultDir | Out-Null
@@ -85,14 +87,16 @@ $stdoutPath = Join-Path $resultDir "godot_stdout.log"
 $stderrPath = Join-Path $resultDir "godot_stderr.log"
 Remove-Item $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
 
+$testScript = if ($Mode -eq "2D") { "res://scripts/test_runner_2d.gd" } else { "res://scripts/test_runner.gd" }
+
 $arguments = @(
     "--path",
     $ProjectRoot,
     "--script",
-    "res://scripts/test_runner.gd"
+    $testScript
 )
 
-$process = Start-Process -FilePath $Godot -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+$process = Start-Process -FilePath $Godot -ArgumentList $arguments -PassThrottling -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 $finished = $process.WaitForExit($TimeoutSeconds * 1000)
 
 if (-not $finished) {

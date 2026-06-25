@@ -282,4 +282,3 @@ func add_ring_marker(parent_node: Node, marker_name: String, y: float, radius: f
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	ring.material_override = material
 	parent_node.add_child(ring)
-

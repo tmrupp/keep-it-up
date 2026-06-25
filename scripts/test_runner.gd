@@ -5,6 +5,7 @@ const SCREENSHOT_DIR := "res://artifacts/screenshots"
 const SCREENSHOT_SIZE := Vector2i(1280, 720)
 const ARENA_MANAGER_SCRIPT := preload("res://scripts/arena_manager.gd")
 const GAME_CONFIG_SCRIPT := preload("res://scripts/game_config.gd")
+const NETWORK_MANAGER_SCRIPT := preload("res://scripts/network_manager.gd")
 
 var results: Dictionary = {
 	"ok": true,
@@ -17,6 +18,7 @@ func _initialize() -> void:
 
 func _run() -> void:
 	_ensure_output_dirs()
+	_run_network_manager_smoke()
 	var arena = ARENA_MANAGER_SCRIPT.new()
 	arena.name = "ArenaUnderTest"
 	root.add_child(arena)
@@ -26,6 +28,8 @@ func _run() -> void:
 	_check("arena_has_two_players", arena.players.size() == 2, "expected two spawned players")
 	_check("arena_has_two_balls", arena.balls.size() == 2, "expected two spawned team balls")
 	_check("arena_has_trap", arena.spring_trap != null, "expected top spring trap")
+	_run_scene_first_smoke(arena)
+	_run_arena_network_smoke(arena)
 	_run_actual_dome_smoke(arena)
 	_run_hud_smoke(arena)
 	_run_mouse_camera_smoke(arena)
@@ -33,6 +37,7 @@ func _run() -> void:
 	await _capture_screenshot("arena_smoke", arena)
 	await _run_ball_spawn_tuning(arena)
 	await _run_ball_impulse(arena)
+	await _run_balloon_scoot_damping(arena)
 	await _run_ball_shot_hit_area(arena)
 	await _run_arena_contains_upward_ball(arena)
 	_run_ground_score(arena)
@@ -48,6 +53,46 @@ func _run() -> void:
 	_write_results(arena)
 	quit(0 if results["ok"] else 1)
 
+func _run_network_manager_smoke() -> void:
+	var network_manager = NETWORK_MANAGER_SCRIPT.new()
+	network_manager.name = "NetworkManagerUnderTest"
+	root.add_child(network_manager)
+	var debug_state: Dictionary = network_manager.get_debug_state()
+	_check("network_manager_default_local", debug_state.get("transport", "") == "local" and debug_state.get("role", "") == "local", "network manager should start in local mode")
+	_check("network_manager_websocket_defaults", debug_state.get("default_websocket_port", 0) == 7000 and str(debug_state.get("default_websocket_url", "")).begins_with("ws://"), "network manager should expose WebSocket defaults for option A")
+	_check("network_manager_not_networked_by_default", debug_state.get("is_networked", true) == false, "network manager should not create a peer until host/join is requested")
+	_check("network_manager_has_option_a_api", network_manager.has_method("host_websocket") and network_manager.has_method("join_websocket"), "network manager should expose native WebSocket host and browser/desktop WebSocket client methods")
+	network_manager.queue_free()
+
+func _run_scene_first_smoke(arena) -> void:
+	_check("arena_uses_player_scene", arena.player_scene != null and arena.get_player(GAME_CONFIG_SCRIPT.TEAM_ONE).scene_file_path.ends_with("player.tscn"), "arena should instantiate players from the reusable player scene")
+	_check("arena_uses_team_ball_scene", arena.team_ball_scene != null and arena.get_ball(GAME_CONFIG_SCRIPT.TEAM_ONE).scene_file_path.ends_with("team_ball.tscn"), "arena should instantiate balls from the reusable team ball scene")
+	_check("arena_uses_spring_trap_scene", arena.spring_trap_scene != null and arena.spring_trap.scene_file_path.ends_with("spring_trap.tscn"), "arena should instantiate the trap from the reusable spring trap scene")
+	_check("arena_uses_hud_scene", arena.hud_scene != null and arena.get_node_or_null("HUD") != null and arena.get_node("HUD").scene_file_path.ends_with("hud.tscn"), "arena should instantiate HUD from its scene")
+	_check("arena_uses_geometry_scene", arena.arena_geometry_scene != null and arena.get_node_or_null("ArenaGeometry") != null and arena.get_node("ArenaGeometry").scene_file_path.ends_with("arena_geometry.tscn"), "arena should instantiate arena geometry from its scene")
+
+func _run_arena_network_smoke(arena) -> void:
+	var network_manager = NETWORK_MANAGER_SCRIPT.new()
+	network_manager.name = "ArenaNetworkManagerUnderTest"
+	root.add_child(network_manager)
+	arena.setup_network(network_manager)
+	var initial_network_state: Dictionary = arena.get_debug_state().get("network", {})
+	_check("arena_network_manager_wired", initial_network_state.get("has_network_manager", false), "arena should expose network manager wiring in debug state")
+	_check("arena_network_default_team_one", initial_network_state.get("local_team_id", 0) == GAME_CONFIG_SCRIPT.TEAM_ONE, "local/default mode should control team one")
+	network_manager.host_started.emit("websocket", "*", 7000)
+	var host_network_state: Dictionary = arena.get_debug_state().get("network", {})
+	_check("arena_network_host_role", host_network_state.get("role", "") == "host", "host start should put arena in host role")
+	_check("arena_network_host_controls_blue", arena.get_player(GAME_CONFIG_SCRIPT.TEAM_ONE).local_control_enabled and arena.get_player(GAME_CONFIG_SCRIPT.TEAM_TWO).local_control_enabled == false, "host should control blue and treat red as remote")
+	network_manager.peer_connected.emit(42)
+	var assigned_network_state: Dictionary = arena.get_debug_state().get("network", {})
+	var assignments: Dictionary = assigned_network_state.get("peer_team_assignments", {})
+	_check("arena_network_assigns_client_red", int(assignments.get(42, 0)) == GAME_CONFIG_SCRIPT.TEAM_TWO, "first connected peer should be assigned red/team two")
+	_check("arena_network_disables_bot_for_peer", arena.red_bot_enabled == false, "red keeper bot should turn off when a network peer owns red")
+	network_manager.peer_disconnected.emit(42)
+	network_manager.server_disconnected.emit()
+	_check("arena_network_returns_local", arena.get_debug_state().get("network", {}).get("role", "") == "local", "server disconnect should return arena to local mode")
+	network_manager.queue_free()
+
 func _run_ball_impulse(arena) -> void:
 	var ball = arena.get_ball(GAME_CONFIG_SCRIPT.TEAM_ONE)
 	var before_velocity: Vector3 = ball.linear_velocity
@@ -55,6 +100,25 @@ func _run_ball_impulse(arena) -> void:
 	await physics_frame
 	_check("ball_impulse_strength_positive", impulse > 0.0, "ball shot impulse should be positive")
 	_check("ball_impulse_changes_velocity", ball.linear_velocity.y > before_velocity.y, "upward shot should increase upward velocity")
+
+func _run_balloon_scoot_damping(arena) -> void:
+	var ball = arena.get_ball(GAME_CONFIG_SCRIPT.TEAM_ONE)
+	ball.reset_ball()
+	ball.linear_velocity = Vector3.ZERO
+	await physics_frame
+	var base_damp: float = ball.ball_linear_damp
+	var impulse: float = ball.apply_shot(Vector3.RIGHT, false)
+	await physics_frame
+	var burst_speed: float = ball.linear_velocity.length()
+	var active_damp: float = ball.linear_damp
+	for _frame in range(36):
+		await physics_frame
+	var settled_speed: float = ball.linear_velocity.length()
+	_check("balloon_shot_impulse_is_snappy", impulse >= 22.0 and burst_speed >= 10.0, "balloon ball should scoot quickly when first shot")
+	_check("balloon_shot_uses_temporary_high_damp", active_damp > base_damp * 4.0, "balloon ball should temporarily raise damping after a shot")
+	_check("balloon_shot_damps_quickly", settled_speed < burst_speed * 0.7, "balloon ball should bleed off shot speed quickly after the initial scoot")
+	_check("balloon_shot_damp_recovers", absf(ball.linear_damp - base_damp) < 0.01 and ball.shot_scoot_damp_timer == 0.0, "balloon ball damping should return to baseline after the scoot window")
+	ball.reset_ball()
 
 func _run_ball_shot_hit_area(arena) -> void:
 	arena.set_red_bot_enabled(false)

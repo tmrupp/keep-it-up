@@ -19,6 +19,8 @@ var stun_timer := 0.0
 var knockback_watch_timer := 0.0
 var look_pitch := 0.0
 var display_color := Color.WHITE
+var local_control_enabled := true
+var command_target: Node = null
 
 @onready var camera: Camera3D = get_node_or_null("Camera3D") as Camera3D
 @onready var weapon = get_node_or_null("WeaponController")
@@ -40,13 +42,13 @@ func _input(event: InputEvent) -> void:
 		camera.rotation.x = look_pitch
 	if Input.is_action_just_pressed("fire"):
 		try_fire()
-	if Input.is_action_just_pressed("reload") and weapon != null:
-		weapon.request_reload()
+	if Input.is_action_just_pressed("reload"):
+		try_reload()
 	if Input.is_action_just_pressed("ui_cancel"):
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func _accepts_local_input() -> bool:
-	return camera != null and camera.current
+	return local_control_enabled and camera != null and camera.current
 
 func _physics_process(delta: float) -> void:
 	if knockback_watch_timer > 0.0:
@@ -55,7 +57,7 @@ func _physics_process(delta: float) -> void:
 		stun_timer = maxf(0.0, stun_timer - delta)
 		velocity.x = move_toward(velocity.x, 0.0, knockback_damping * delta)
 		velocity.z = move_toward(velocity.z, 0.0, knockback_damping * delta)
-	else:
+	elif local_control_enabled:
 		_apply_movement(delta)
 	velocity.y -= low_gravity * delta
 	var previous_velocity := velocity
@@ -67,8 +69,8 @@ func setup(new_team_id: int, spawn_position: Vector3, active_camera: bool) -> vo
 	display_color = GameConfig.team_color(team_id)
 	global_position = spawn_position
 	_ensure_nodes()
-	if camera != null:
-		camera.current = active_camera
+	set_active_camera(active_camera)
+	set_local_control_enabled(active_camera)
 
 func reset_player(spawn_position: Vector3) -> void:
 	global_position = spawn_position
@@ -84,10 +86,30 @@ func reset_player(spawn_position: Vector3) -> void:
 func reset_for_point(spawn_position: Vector3) -> void:
 	reset_player(spawn_position)
 
+func set_active_camera(active: bool) -> void:
+	_ensure_nodes()
+	if camera != null:
+		camera.current = active
+
+func set_local_control_enabled(enabled: bool) -> void:
+	local_control_enabled = enabled
+
+func set_command_target(new_command_target: Node) -> void:
+	command_target = new_command_target
+
 func try_fire() -> bool:
 	if stun_timer > 0.0 or weapon == null or camera == null:
 		return false
+	if command_target != null and command_target.has_method("request_local_fire"):
+		return command_target.request_local_fire(self)
 	return weapon.try_fire_from_camera(camera, self)
+
+func try_reload() -> bool:
+	if weapon == null:
+		return false
+	if command_target != null and command_target.has_method("request_local_reload"):
+		return command_target.request_local_reload(self)
+	return weapon.request_reload()
 
 func receive_shot_knockback(direction: Vector3, impulse_strength: float) -> void:
 	velocity += direction.normalized() * impulse_strength
@@ -107,8 +129,41 @@ func get_debug_state() -> Dictionary:
 		"position": _vector_to_array(global_position),
 		"velocity": _vector_to_array(velocity),
 		"stun_timer": stun_timer,
+		"local_control_enabled": local_control_enabled,
 		"weapon": weapon.get_debug_state() if weapon != null else {}
 	}
+
+func get_network_state() -> Dictionary:
+	return {
+		"team_id": team_id,
+		"position": global_position,
+		"velocity": velocity,
+		"rotation_y": rotation.y,
+		"look_pitch": look_pitch,
+		"stun_timer": stun_timer,
+		"knockback_watch_timer": knockback_watch_timer,
+		"weapon_ammo": weapon.ammo if weapon != null else 0,
+		"weapon_final_bonus_enabled": weapon.final_bonus_enabled if weapon != null else false,
+		"weapon_is_reloading": weapon.is_reloading if weapon != null else false,
+		"weapon_reload_timer": weapon.reload_timer if weapon != null else 0.0,
+		"weapon_cooldown_timer": weapon.cooldown_timer if weapon != null else 0.0
+	}
+
+func apply_network_state(state: Dictionary) -> void:
+	global_position = state.get("position", global_position)
+	velocity = state.get("velocity", velocity)
+	rotation.y = state.get("rotation_y", rotation.y)
+	look_pitch = state.get("look_pitch", look_pitch)
+	if camera != null:
+		camera.rotation.x = look_pitch
+	stun_timer = state.get("stun_timer", stun_timer)
+	knockback_watch_timer = state.get("knockback_watch_timer", knockback_watch_timer)
+	if weapon != null:
+		weapon.ammo = int(state.get("weapon_ammo", weapon.ammo))
+		weapon.final_bonus_enabled = bool(state.get("weapon_final_bonus_enabled", weapon.final_bonus_enabled))
+		weapon.is_reloading = bool(state.get("weapon_is_reloading", weapon.is_reloading))
+		weapon.reload_timer = float(state.get("weapon_reload_timer", weapon.reload_timer))
+		weapon.cooldown_timer = float(state.get("weapon_cooldown_timer", weapon.cooldown_timer))
 
 func _apply_movement(delta: float) -> void:
 	var input_vector := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
